@@ -1,10 +1,9 @@
 streamlit
-opencv-contrib-python-headless
-pandas
-numpy
-streamlit
+streamlit-webrtc
 psycopg2-binary
 opencv-python-headless
 python-dotenv
 azure-cognitiveservices-vision-face
 msrest
+pandas
+numpy
