@@ -1,7 +1,7 @@
 streamlit
 streamlit-webrtc
 psycopg2-binary
-opencv-python-headless
+opencv-contrib-python-headless
 python-dotenv
 azure-cognitiveservices-vision-face
 msrest
