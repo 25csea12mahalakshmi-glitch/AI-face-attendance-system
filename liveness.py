@@ -2,18 +2,22 @@ import os
 import cv2
 
 def load_cascades():
-    # Attempt 1: Check for local files in repo root
+    # 1. Start with local filenames
     face_xml = "haarcascade_frontalface_default.xml"
     eye_xml = "haarcascade_eye.xml"
 
-    # Attempt 2: Fallback to OpenCV built-in data paths if local files don't exist
-    if not os.path.exists(face_xml) and hasattr(cv2, 'data') and cv2.data.haarcascades:
-        face_xml = cv2.data.haarcascades + 'haarcascade_frontalface_default.xml'
-        eye_xml = cv2.data.haarcascades + 'haarcascade_eye.xml'
+    # 2. Check if local files exist; if not, try resolving OpenCV built-in directory safely
+    if not os.path.exists(face_xml):
+        data_path = getattr(cv2, 'data', None)
+        cascade_dir = getattr(data_path, 'haarcascades', None) if data_path else None
+        
+        if cascade_dir:
+            face_xml = os.path.join(cascade_dir, 'haarcascade_frontalface_default.xml')
+            eye_xml = os.path.join(cascade_dir, 'haarcascade_eye.xml')
 
-    # Safely instantiate classifiers only if valid strings exist
-    face_cascade = cv2.CascadeClassifier(face_xml) if isinstance(face_xml, str) else cv2.CascadeClassifier()
-    eye_cascade = cv2.CascadeClassifier(eye_xml) if isinstance(eye_xml, str) else cv2.CascadeClassifier()
+    # 3. Load classifiers cleanly
+    face_cascade = cv2.CascadeClassifier(face_xml if os.path.exists(face_xml) else "")
+    eye_cascade = cv2.CascadeClassifier(eye_xml if os.path.exists(eye_xml) else "")
 
     return face_cascade, eye_cascade
 
