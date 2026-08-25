@@ -1,31 +1,35 @@
 import os
 import cv2
 
-def load_cascades():
-    # Instantiate empty classifiers first (never crashes)
-    face_cascade = cv2.CascadeClassifier()
-    eye_cascade = cv2.CascadeClassifier()
+# Global cache to prevent re-instantiating classifiers on every frame
+_FACE_CASCADE = None
+_EYE_CASCADE = None
 
-    # Determine valid path candidates
-    paths_to_check = [
-        "haarcascade_frontalface_default.xml",
-        os.path.join(getattr(cv2, 'data', None).haarcascades, 'haarcascade_frontalface_default.xml') if hasattr(cv2, 'data') and cv2.data and hasattr(cv2.data, 'haarcascades') else ""
-    ]
+def get_cascades():
+    global _FACE_CASCADE, _EYE_CASCADE
+    if _FACE_CASCADE is not None:
+        return _FACE_CASCADE, _EYE_CASCADE
 
-    for path in paths_to_check:
-        if path and os.path.exists(path):
-            face_cascade.load(path)
-            eye_path = path.replace('haarcascade_frontalface_default.xml', 'haarcascade_eye.xml')
-            if os.path.exists(eye_path):
-                eye_cascade.load(eye_path)
-            break
+    try:
+        # Load cascades dynamically when first needed
+        cascade_dir = getattr(cv2.data, 'haarcascades', '') if hasattr(cv2, 'data') else ''
+        face_path = os.path.join(cascade_dir, 'haarcascade_frontalface_default.xml') if cascade_dir else 'haarcascade_frontalface_default.xml'
+        eye_path = os.path.join(cascade_dir, 'haarcascade_eye.xml') if cascade_dir else 'haarcascade_eye.xml'
 
-    return face_cascade, eye_cascade
+        _FACE_CASCADE = cv2.CascadeClassifier(face_path if os.path.exists(face_path) else "")
+        _EYE_CASCADE = cv2.CascadeClassifier(eye_path if os.path.exists(eye_path) else "")
+    except Exception:
+        _FACE_CASCADE = None
+        _EYE_CASCADE = None
 
-face_cascade, eye_cascade = load_cascades()
+    return _FACE_CASCADE, _EYE_CASCADE
 
 def detect_face_and_liveness(frame):
-    if frame is None or face_cascade.empty():
+    if frame is None:
+        return False, frame, None
+
+    face_cascade, eye_cascade = get_cascades()
+    if face_cascade is None or face_cascade.empty():
         return False, frame, None
 
     gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
@@ -38,7 +42,7 @@ def detect_face_and_liveness(frame):
     face_crop = frame[y:y+h, x:x+w]
     roi_gray = gray[y:y+h, x:x+w]
 
-    eyes = eye_cascade.detectMultiScale(roi_gray, scaleFactor=1.1, minNeighbors=10) if not eye_cascade.empty() else []
+    eyes = eye_cascade.detectMultiScale(roi_gray, scaleFactor=1.1, minNeighbors=10) if eye_cascade and not eye_cascade.empty() else []
     
     color = (0, 255, 0) if len(eyes) > 0 else (0, 165, 255)
     cv2.rectangle(frame, (x, y), (x + w, y + h), color, 2)
