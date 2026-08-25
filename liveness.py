@@ -1,27 +1,12 @@
-import os
 import cv2
 
-def load_cascades():
-    # 1. Start with local filenames
-    face_xml = "haarcascade_frontalface_default.xml"
-    eye_xml = "haarcascade_eye.xml"
+# Hardcode the default OpenCV cascade paths directly as strings 
+# (Passing explicit string paths guarantees cv2.CascadeClassifier never receives None)
+FACE_CASCADE_PATH = cv2.data.haarcascades + 'haarcascade_frontalface_default.xml' if hasattr(cv2, 'data') else ""
+EYE_CASCADE_PATH = cv2.data.haarcascades + 'haarcascade_eye.xml' if hasattr(cv2, 'data') else ""
 
-    # 2. Check if local files exist; if not, try resolving OpenCV built-in directory safely
-    if not os.path.exists(face_xml):
-        data_path = getattr(cv2, 'data', None)
-        cascade_dir = getattr(data_path, 'haarcascades', None) if data_path else None
-        
-        if cascade_dir:
-            face_xml = os.path.join(cascade_dir, 'haarcascade_frontalface_default.xml')
-            eye_xml = os.path.join(cascade_dir, 'haarcascade_eye.xml')
-
-    # 3. Load classifiers cleanly
-    face_cascade = cv2.CascadeClassifier(face_xml if os.path.exists(face_xml) else "")
-    eye_cascade = cv2.CascadeClassifier(eye_xml if os.path.exists(eye_xml) else "")
-
-    return face_cascade, eye_cascade
-
-face_cascade, eye_cascade = load_cascades()
+face_cascade = cv2.CascadeClassifier(FACE_CASCADE_PATH)
+eye_cascade = cv2.CascadeClassifier(EYE_CASCADE_PATH)
 
 def detect_face_and_liveness(frame):
     if frame is None or face_cascade.empty():
