@@ -1,0 +1,14 @@
+# Ignore environment secrets
+.env
+
+# Ignore Python compiled byte code
+__pycache__/
+*.pyc
+
+# Ignore local database files
+*.db
+attendance.db
+
+# Ignore virtual environments
+venv/
+.venv/ 
