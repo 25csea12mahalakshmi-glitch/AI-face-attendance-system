@@ -1,124 +1,125 @@
-import io
 import os
-import sqlite3
-from datetime import datetime
-import cv2
-import numpy as np
-from fastapi import FastAPI, File, UploadFile
+import psycopg2
+from psycopg2.extras import Json
+from pgvector.psycopg2 import register_vector
+from fastapi import FastAPI, File, UploadFile, Depends, HTTPException, status
+from fastapi.middleware.cors import CORSMiddleware
+from fastapi.security import OAuth2PasswordBearer, OAuth2PasswordRequestForm
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel
+import cv2
+import numpy as np
+from insightface.app import FaceAnalysis
+from dotenv import load_dotenv
 
-from liveness import detect_face_and_liveness
+load_dotenv()
 
-app = FastAPI(title="Face Attendance API Engine", version="1.0.0")
+app = FastAPI(title="Enterprise Face Attendance API", version="2.0.0")
 
-DB_FILE = "attendance.db"
-KNOWN_FACES_DIR = "known_faces"
+# --- CORS Settings for React ---
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
 
-def init_db():
-    conn = sqlite3.connect(DB_FILE)
+DATABASE_URL = os.getenv("DATABASE_URL")
+
+# --- Initialize InsightFace Model ---
+face_app = FaceAnalysis(name='buffalo_s', providers=['CPUExecutionProvider'])
+face_app.prepare(ctx_id=0, det_size=(640, 640))
+
+# --- Pydantic Models ---
+class Employee(BaseModel):
+    employee_id: str
+    name: str
+    department: str
+
+# --- Helper DB Connection ---
+def get_db():
+    conn = psycopg2.connect(DATABASE_URL)
+    register_vector(conn)
+    return conn
+
+# --- Authentication Endpoint ---
+@app.post("/token")
+async def login(form_data: OAuth2PasswordRequestForm = Depends()):
+    if form_data.username == "admin" and form_data.password == "admin123":
+        return {"access_token": "demo_jwt_token_secret", "token_type": "bearer"}
+    raise HTTPException(status_code=400, detail="Incorrect credentials")
+
+# --- Employee Management Endpoints ---
+@app.post("/api/v1/employees")
+async def add_employee(emp: Employee):
+    conn = get_db()
     cursor = conn.cursor()
-    cursor.execute('''
-        CREATE TABLE IF NOT EXISTS attendance (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            person_id TEXT NOT NULL,
-            timestamp DATETIME NOT NULL
-        )
-    ''')
+    cursor.execute(
+        "INSERT INTO employees (employee_id, name, department) VALUES (%s, %s, %s);",
+        (emp.employee_id, emp.name, emp.department)
+    )
     conn.commit()
     conn.close()
+    return {"message": f"Employee {emp.name} added successfully."}
 
-init_db()
-
-# Global recognizer variables
-recognizer = None
-labels_map = {}
-
-def train_recognizer():
-    global recognizer, labels_map
-    recognizer = cv2.face.LBPHFaceRecognizer_create()
-    labels_map = {}
-    faces_data = []
-    labels_data = []
-
-    if not os.path.exists(KNOWN_FACES_DIR):
-        os.makedirs(KNOWN_FACES_DIR)
-
-    current_id = 0
-    cascade_path = os.path.join(os.path.dirname(__file__), "haarcascade_frontalface_default.xml")
-    face_cascade = cv2.CascadeClassifier(cascade_path if os.path.exists(cascade_path) else cv2.data.haarcascades + 'haarcascade_frontalface_default.xml')
-
-    for file in os.listdir(KNOWN_FACES_DIR):
-        if file.lower().endswith(('.jpg', '.jpeg', '.png')):
-            name = os.path.splitext(file)[0]
-            labels_map[current_id] = name
-            img_path = os.path.join(KNOWN_FACES_DIR, file)
-            img = cv2.imread(img_path, cv2.IMREAD_GRAYSCALE)
-            
-            if img is not None:
-                detected = face_cascade.detectMultiScale(img, scaleFactor=1.1, minNeighbors=5)
-                for (x, y, w, h) in detected:
-                    faces_data.append(img[y:y+h, x:x+w])
-                    labels_data.append(current_id)
-                if len(detected) == 0:
-                    faces_data.append(img)
-                    labels_data.append(current_id)
-            current_id += 1
-
-    if faces_data:
-        recognizer.train(faces_data, np.array(labels_data))
-
-@app.on_event("startup")
-def startup_event():
-    train_recognizer()
-
-@app.get("/api/v1/health")
-def health_check():
-    return {"status": "online", "model_loaded": recognizer is not None}
-
-@app.get("/api/v1/logs")
-def get_logs():
-    conn = sqlite3.connect(DB_FILE)
+@app.get("/api/v1/employees")
+async def get_employees():
+    conn = get_db()
     cursor = conn.cursor()
-    cursor.execute("SELECT person_id, timestamp FROM attendance ORDER BY id DESC LIMIT 15")
+    cursor.execute("SELECT employee_id, name, department FROM employees;")
     rows = cursor.fetchall()
     conn.close()
-    return [{"PersonID": row[0], "Timestamp": row[1]} for row in rows]
+    return [{"employee_id": r[0], "name": r[1], "department": r[2]} for r in rows]
 
+# --- Logs Endpoint (Neon PostgreSQL) ---
+@app.get("/api/v1/logs")
+def get_logs():
+    conn = get_db()
+    cursor = conn.cursor()
+    cursor.execute("SELECT user_name, confidence, detected_at FROM recognized_face_logs ORDER BY detected_at DESC LIMIT 15;")
+    rows = cursor.fetchall()
+    conn.close()
+    return [{"PersonID": row[0], "Confidence": row[1], "Timestamp": row[2].strftime("%Y-%m-%d %H:%M:%S")} for row in rows]
+
+# --- Verification & Vector Match Endpoint ---
 @app.post("/api/v1/verify")
 async def verify_attendance(file: UploadFile = File(...)):
     contents = await file.read()
     np_img = np.frombuffer(contents, np.uint8)
     frame = cv2.imdecode(np_img, cv2.IMREAD_COLOR)
 
-    has_face, faces, is_live = detect_face_and_liveness(frame)
+    faces = face_app.get(frame)
+    if not faces:
+        return JSONResponse(status_code=400, content={"status": "error", "message": "No face detected."})
 
-    if not has_face:
-        return JSONResponse(status_code=400, content={"status": "error", "message": "No face detected in camera frame."})
+    target_face = faces[0]
+    embedding = target_face.embedding.tolist()
 
-    if not is_live:
-        return JSONResponse(status_code=403, content={"status": "rejected", "message": "Anti-Spoof Alert: Liveness verification failed."})
+    conn = get_db()
+    cursor = conn.cursor()
 
-    if recognizer is None:
-        return JSONResponse(status_code=500, content={"status": "error", "message": "Model not initialized."})
+    # Perform pgvector Cosine Distance Search in Neon
+    match_query = """
+        SELECT user_name, face_embedding <=> %s::vector AS distance 
+        FROM recognized_face_logs 
+        ORDER BY distance ASC LIMIT 1;
+    """
+    cursor.execute(match_query, (embedding,))
+    result = cursor.fetchone()
 
-    gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
-    (x, y, w, h) = faces[0]
-    face_roi = gray[y:y+h, x:x+w]
+    name = "Unknown User"
+    if result and result[1] < 0.4:
+        name = result[0]
 
-    label_id, confidence = recognizer.predict(face_roi)
+    # Insert verified frame into Neon
+    bbox = target_face.bbox.astype(int)
+    bbox_json = {"x": int(bbox[0]), "y": int(bbox[1]), "w": int(bbox[2]-bbox[0]), "h": int(bbox[3]-bbox[1])}
+    cursor.execute(
+        "INSERT INTO recognized_face_logs (user_name, confidence, face_embedding, bounding_box) VALUES (%s, %s, %s::vector, %s);",
+        (name, float(target_face.det_score), embedding, Json(bbox_json))
+    )
+    conn.commit()
+    conn.close()
 
-    if confidence < 115 and label_id in labels_map:
-        matched_name = labels_map[label_id]
-        
-        # Log into DB
-        conn = sqlite3.connect(DB_FILE)
-        cursor = conn.cursor()
-        timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-        cursor.execute("INSERT INTO attendance (person_id, timestamp) VALUES (?, ?)", (matched_name, timestamp))
-        conn.commit()
-        conn.close()
-
-        return {"status": "success", "person_name": matched_name, "confidence": float(confidence)}
-    
-    return JSONResponse(status_code=404, content={"status": "unrecognized", "message": "Unrecognized face."})
+    return {"status": "success", "person_name": name, "confidence": float(target_face.det_score)}
